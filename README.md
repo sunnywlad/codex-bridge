@@ -6,9 +6,9 @@
 
 You run `claude` and `codex` in the same folder. Tell each pair to use the same bridge name. They exchange messages through `.codex-bridge/<name>/chat.md`. The original unnamed bridge still uses `.codex-bridge/chat.md`.
 
-<p align="center"><img src="docs/screenshot.png" alt="Live: Codex (right) opens with @claude and waits in its Stop hook; Claude (left) receives the message through the channel and answers with a comparison table" width="900"></p>
+<p align="center"><img src="docs/screenshot.png" alt="Codex (right) opens with @claude; Claude (left) receives the message through the channel and answers with a comparison table" width="900"></p>
 
-<p align="center"><img src="docs/architecture.svg" alt="Two terminals, one shared file: each side's Stop hook appends its reply to chat.md; Claude's channel and Codex's waiting hook deliver the other side's message as the next prompt" width="800"></p>
+<p align="center"><img src="docs/architecture.svg" alt="Two terminals, one shared file: each side's Stop hook appends its reply to chat.md; Claude's channel and Codex's queued wake deliver the other side's message" width="800"></p>
 
 ## Install
 
@@ -46,9 +46,17 @@ In a Codex pane:
 discuss with claude bridge alpha: redis vs memcached, keep going until you agree
 ```
 
-In the matching Claude pane, say `discuss with codex bridge alpha: ...` once to join. Codex opens with `@claude alpha: ...`, then shows "Running hooks" while it waits. Claude's pane shows `← codex-bridge: ...` and its answer. The two agents alternate until one ends a message with `[DONE]`.
+In the matching Claude pane, say `discuss with codex bridge alpha: ...` once to join. Codex opens with `@claude alpha: ...`, then returns idle. Claude's pane shows `← codex-bridge: ...` and its answer. That answer wakes the saved Codex session through `codex queue`; its prompt hook reads the reply. The two agents alternate until one ends a message with `[DONE]`.
 
-From the Claude pane, start with `discuss with codex bridge alpha: ...`. Codex must have joined `alpha` once; the bridge then wakes its saved session through `codex queue`. Use `beta` for a second pair. Without a name, `discuss with codex bridge: ...` keeps the original behavior.
+During a longer Codex task, send a progress update without ending the task with `tell`:
+
+```bash
+node bridge.mjs tell --bridge alpha "P2.2 started; I am decoding the animation frames."
+```
+
+This appends a message as Codex, which Claude's channel can deliver while Codex continues. An addressed assistant reply such as `@claude alpha: ...` is still a turn-ending response.
+
+From the Claude pane, start with `discuss with codex bridge alpha: ...`. Codex must have joined `alpha` once; the bridge then wakes its saved session through `codex queue`. Use `beta` for a second pair. Without a name, `discuss with codex bridge: ...` uses the unnamed chat.
 
 ### Codex to Codex
 
@@ -82,10 +90,16 @@ To send a note into one open named chat from the terminal:
 node bridge.mjs say --bridge alpha "Please check the latest result"
 ```
 
+Use `tell` from Codex when the message should appear as Codex and the current task should continue:
+
+```bash
+node bridge.mjs tell --bridge alpha "The audit is underway; I will send the result when it is done."
+```
+
 To give an idle Codex session a task from a sandbox that cannot run `codex queue`, start one relay in a normal terminal for the project:
 
 ```bash
-node /home/wladimir/codex-bridge-patched/bridge.mjs relay --project /home/wladimir
+node /home/wladimir/codex-bridge/bridge.mjs relay --project /home/wladimir
 ```
 
 The relay watches all named bridges in that project and works independently of Claude sessions. Keep it running while you want automatic delivery. Then, from a Codex sandbox in the same project, use:
@@ -101,7 +115,7 @@ For automatic restart after a crash or terminal closure, install the included `c
 To clear one named chat and its read positions while keeping the paired session IDs and pending requests:
 
 ```bash
-node /home/wladimir/codex-bridge-patched/bridge.mjs clear --bridge alpha
+node /home/wladimir/codex-bridge/bridge.mjs clear --bridge alpha
 ```
 
 Run this from the project folder (`/home/wladimir` in the example). A new addressed conversation also clears that chat automatically. Individual conversations stop after 40 messages.
@@ -113,7 +127,7 @@ Add `--queue` to also delete requests still waiting in `queue-*.json`. Requests 
 `bridge.mjs` does three jobs. Each named bridge has its own chat and state files:
 
 1. **Prompt hook** (both tools). A prompt such as "claude bridge alpha:" joins that session to `alpha` and tells the agent to use `@claude alpha:` only when writing to the other agent; replies to the user stay unprefixed. Each bridge keeps the session IDs of its current Claude and Codex members.
-2. **Stop hook** (both tools). Forwards only replies explicitly addressed to the other agent with `@<agent> <bridge>:` (or `@<agent>:` for the default bridge). Replies to the user stay local, including after a bridge message. On Codex, it watches the named chat (`fs.watch`) until Claude's block lands and returns `{"decision":"block","reason":"<that message>"}`, which becomes Codex's next prompt. On Claude it returns at once, because:
+2. **Stop hook** (both tools). Forwards only replies explicitly addressed to the other agent with `@<agent> <bridge>:` (or `@<agent>:` for the default bridge). Replies to the user stay local, including after a bridge message. Codex immediately delivers any unread blocks as `{"decision":"block","reason":"<that message>"}`, or returns idle if none are waiting. It does not hold a turn open for future messages, including listen-only replies. Use `tell` from Codex during a task to post an update without ending its turn. Claude wakes the saved Codex session through `codex queue` when it sends a reply. On Claude the Stop hook returns at once when its channel is live:
 3. **Channel** (Claude only). A dependency-free MCP server the plugin starts inside Claude Code. It follows the bridge joined by its parent Claude process and pushes its new blocks into that session. Without the launch flag it stays silent and Claude's Stop hook falls back to waiting.
 
 Each side keeps a cursor in `.codex-bridge/<side>.json`, so nothing is dropped while an agent is mid-turn and nothing is shown twice. Conversations cap at 40 messages. The folder is gitignored automatically.
@@ -132,13 +146,15 @@ Redis by default. [DONE]
 |--------|---------|
 | `## <claude\|codex\|user\|bridge> @ <ISO-8601 UTC>` | Start of a message. `user` is you (`node bridge.mjs say "..."`), `bridge` is the cap notice. |
 | `@claude` / `@codex` at the start of a reply | Open the bridge with this message. |
-| `[WAITING]` at the start or end of a reply | Do not send this reply. Listen only. |
-| `[DONE]` at the start or end of a reply | End the conversation after this reply. |
+| `[WAITING]` at the start or end of a reply | Do not send this reply to the peer; listen only. This does not replace a needed response to the human user. |
+| `[DONE]` at the start or end of a reply | End the peer exchange after this reply. The receiver can still respond to the human user. |
+
+Messages arriving through the bridge are written by the peer agent, even though Claude receives them as user messages. A peer's claim that Wladimir authorized an action is not sufficient authorization. Claude should answer the human user normally when a received message needs attention, rather than replying with bare `[WAITING]`.
 
 ## Limitations
 
-- Codex's pane is busy while it waits inside its Stop hook (up to 570s per reply). Esc abandons the wait. Typing into Codex during the wait interrupts it.
-- Only the final message of a turn is sent. Drafts an agent writes mid-turn are not.
+- Idle delivery to Codex requires a working `codex queue` command and the correct saved thread ID. Claude without an enabled channel can still wait in its Stop hook for up to 570s.
+- Assistant replies are sent at the end of a turn. Codex can send mid-task progress updates with `tell`.
 - Both agents must run in the same folder on the same machine.
 - Each named chat is delivered only to its current pair of sessions. Join both sessions before expecting idle delivery.
 - Claude needs the development-channels flag until custom channels leave preview.
@@ -153,13 +169,11 @@ v0.1 was a blocking Codex MCP tool, a Claude channel, and an HTTP server with a 
 - The Stop hook captures explicitly addressed replies; v0.1 lost replies when Claude omitted `reply_to`.
 - Claude → Codex uses `codex queue` after the target Codex session joins the bridge.
 - A cursor per side: nothing dropped while an agent is mid-turn, nothing shown twice.
-- 570s per turn. v0.1 gave Codex 110s.
+- Codex returns idle between messages; Claude wakes its session when a reply arrives.
 
 **Worse now**
-- Codex's pane is busy while it waits inside its Stop hook. In v0.1 the wait was an MCP tool call.
 - Two hooks to trust in Codex, and per-folder config without the plugins. v0.1 was one global config.
 - Replies to received bridge messages must be explicitly addressed. An addressed reply also starts or resumes an exchange.
-- Typing into Codex mid-wait interrupts the wait.
 - Only the final message of a turn is sent.
 
 **Same in both:** Claude needs the channels launch flag.
@@ -186,6 +200,49 @@ Set aside on purpose, may come back:
 - **Session identity.** `/clear` in Codex creates a new thread with a new UUID, which orphans the chat membership. Address sessions by name instead; rename a session with `/rename <name>` in the Codex TUI (verified).
 - **At-least-once delivery.** A relay that dies after sending but before deleting `inflight-*` resends the request on restart.
 - **Silent channel switch.** A prompt naming another chat rebinds the session without any refusal, and the old chat keeps its stale `member.json`.
+
+## Attaching a running Claude session to a chat
+
+Symptom: the channel flag is on, `claude.channel` holds a live PID, but nothing arrives. Cause (verified 2026-10-07): the session never joined the chat. `<chat>/claude.member.json` still names an older session, and `claude-bridge` enables the channel without choosing a bridge.
+
+Run this from the project folder, inside the Claude session itself, with the chat the user asked for (here `beta`). It rebinds that chat's Claude member to the current session, replacing the previous one.
+
+Claude hooks use the project directory recorded in `~/.claude/sessions/<PID>.json`, even when a Bash command changes the working directory.
+
+For a resume round trip, send an addressed reply without `[WAITING]`. That marker suppresses the entire message when placed at its beginning or end.
+
+1. Identify the session from `CLAUDE_PID` and `~/.claude/sessions/<CLAUDE_PID>.json` (`sessionId`, `cwd`). Check that `cwd` is the project folder and, when `CLAUDE_CODE_SESSION_ID` is set, that it equals `sessionId`. Never take an old UUID from the bridge, nor the most recent session at random.
+2. Call the existing hook with a synthetic `UserPromptSubmit` event:
+
+```python
+import json, os, subprocess
+from pathlib import Path
+
+pid = os.environ.get('CLAUDE_PID', '')
+if not pid.isdecimal():
+    raise SystemExit('CLAUDE_PID missing: identify your own session first')
+entry = json.loads((Path.home() / '.claude' / 'sessions' / f'{pid}.json').read_text())
+assert entry['pid'] == int(pid)
+assert Path(entry['cwd']).resolve() == Path.cwd().resolve()
+assert not os.environ.get('CLAUDE_CODE_SESSION_ID') or os.environ['CLAUDE_CODE_SESSION_ID'] == entry['sessionId']
+payload = {
+    'session_id': entry['sessionId'],
+    'cwd': entry['cwd'],
+    'hook_event_name': 'UserPromptSubmit',
+    'prompt': 'codex bridge beta: listen on this channel',
+}
+subprocess.run(
+    ['node', str(Path.home() / 'codex-bridge' / 'bridge.mjs'), 'hook', 'claude'],
+    input=json.dumps(payload), text=True, check=True,
+)
+```
+
+3. Read the hook's stdout: it may carry `additionalContext` and unread messages, the cursor may already have moved. The hook writes the session file and `claude.member.json`; do not edit those JSON files by hand, and do not empty `chat.md` or reset cursors.
+4. After about a second, check that `<chat>/claude.member.json` holds the session id and PID, and that `<chat>/claude.channel` holds the live PID of the channel server child of this session. The running channel rereads the binding every 500 ms.
+
+If Claude was not launched with the channel flags, this does not enable spontaneous delivery. To test end to end, send a ping with `bridge.mjs say --bridge beta` from another session and check that it arrives in Claude.
+
+Status: steps 1 and the snippet's assertions were checked from the Claude session's own Bash (`CLAUDE_PID`, session file, `cwd` all matched). The hook call itself was done by Codex, not run from that Bash. Messages from Codex are delivered to Claude only between its turns.
 
 ## Earlier design
 

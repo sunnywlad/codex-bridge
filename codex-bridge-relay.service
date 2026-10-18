@@ -4,7 +4,7 @@ Description=Codex Bridge queue relay
 [Service]
 Type=simple
 WorkingDirectory=/home/wladimir
-ExecStart=/home/wladimir/.nvm/versions/node/v22.23.2/bin/node /home/wladimir/codex-bridge-patched/bridge.mjs relay --project /home/wladimir
+ExecStart=/home/wladimir/.nvm/versions/node/v22.23.2/bin/node /home/wladimir/codex-bridge/bridge.mjs relay --project /home/wladimir
 Restart=always
 RestartSec=5
 
