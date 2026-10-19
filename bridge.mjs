@@ -16,7 +16,7 @@
  *
  * A reply addressed with @claude or @codex opens the default bridge. Named bridges use
  * @claude <name>: or @codex <name>:. Only explicitly addressed replies are forwarded.
- * Claude gets it through its channel, or a waiting Stop hook when the channel is disabled.
+ * Claude gets it through its channel, or at its next prompt when the channel is disabled.
  * Codex returns idle after sending; Claude queues a wake and Codex's prompt hook reads the reply.
  * Messages already waiting at Codex's Stop are returned immediately as its next prompt. [WAITING] at the start or end of
  * a reply means listen only; [DONE] ends the conversation; a new @claude/@codex reply reopens it.
@@ -423,10 +423,9 @@ async function hook(arg) {
     saveState(me, state)
     if (me === 'claude') wakeCodex()
   }
-  if (me === 'claude') for (let i = 0; i < 80; i++) { // give a newly starting channel up to 2s to claim this bridge
-    if (channelAlive()) return // the channel wakes Claude; no need to hold the terminal
-    await new Promise(r => setTimeout(r, 25))
-  }
+  // Claude receives peer messages through the channel or on its next prompt.
+  // Never hold Claude's Stop hook open waiting for a channel or a Codex reply.
+  if (me === 'claude') return
 
   const deadline = Date.now() + WAIT_MS
   while (existsSync(CHAT)) {
@@ -474,13 +473,19 @@ function channelRegistered() {
   return false
 }
 
+/** Current session of the parent Claude process. /clear changes the id but keeps the pid, so this is reread on every tick. */
+function liveClaudeSession() {
+  try { return JSON.parse(readFileSync(join(homedir(), '.claude', 'sessions', `${process.ppid}.json`), 'utf8')).sessionId } catch {}
+}
+
 /** Claude Code channel: a one-way MCP server over stdio that pushes new blocks from the other side into the session. */
-function channel(sessionId = process.env.CLAUDE_CODE_SESSION_ID) {
+function channel(fixedId) {
   setDir(process.cwd())
   const me = 'claude'
   const owned = new Set()
   const selectBridge = () => {
     setDir(process.cwd())
+    const sessionId = fixedId ?? liveClaudeSession() ?? process.env.CLAUDE_CODE_SESSION_ID
     if (sessionId) {
       setDir(process.cwd(), sessionName('claude', sessionId))
       return
@@ -517,7 +522,7 @@ function channel(sessionId = process.env.CLAUDE_CODE_SESSION_ID) {
   })
   process.stdin.on('end', () => process.stdout.end(() => process.exit(0)))
 
-  if (!channelRegistered()) return // not enabled for this session: the Stop hook keeps delivering by waiting
+  if (!channelRegistered()) return // not enabled for this session: unread messages arrive at the next prompt
   const tick = () => {
     selectBridge()
     for (const marker of owned) {

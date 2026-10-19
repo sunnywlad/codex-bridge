@@ -127,8 +127,8 @@ Add `--queue` to also delete requests still waiting in `queue-*.json`. Requests 
 `bridge.mjs` does three jobs. Each named bridge has its own chat and state files:
 
 1. **Prompt hook** (both tools). A prompt such as "B-a:" joins that session to `a` and tells the agent to use `@claude a:` only when writing to the other agent; replies to the user stay unprefixed. Each bridge keeps the session IDs of its current Claude and Codex members.
-2. **Stop hook** (both tools). Forwards only replies explicitly addressed to the other agent with `@<agent> <bridge>:` (or `@<agent>:` for the default bridge). Replies to the user stay local, including after a bridge message. Codex immediately delivers any unread blocks as `{"decision":"block","reason":"<that message>"}`, or returns idle if none are waiting. It does not hold a turn open for future messages, including listen-only replies. Use `tell` from Codex during a task to post an update without ending its turn. Claude wakes the saved Codex session through `codex queue` when it sends a reply. On Claude the Stop hook returns at once when its channel is live:
-3. **Channel** (Claude only). A dependency-free MCP server the plugin starts inside Claude Code. It follows the bridge joined by its parent Claude process and pushes its new blocks into that session. Without the launch flag it stays silent and Claude's Stop hook falls back to waiting.
+2. **Stop hook** (both tools). Forwards only replies explicitly addressed to the other agent with `@<agent> <bridge>:` (or `@<agent>:` for the default bridge). Replies to the user stay local, including after a bridge message. Codex immediately delivers any unread blocks as `{"decision":"block","reason":"<that message>"}`, or returns idle if none are waiting. It does not hold a turn open for future messages, including listen-only replies. Use `tell` from Codex during a task to post an update without ending its turn. Claude wakes the saved Codex session through `codex queue` when it sends a reply. Claude's Stop hook always returns immediately.
+3. **Channel** (Claude only). A dependency-free MCP server the plugin starts inside Claude Code. It follows the bridge joined by its parent Claude process and pushes new blocks into that session. Without a live channel, Claude catches up on unread messages at its next prompt.
 
 Each side keeps a cursor in `.codex-bridge/<side>.json`, so nothing is dropped while an agent is mid-turn and nothing is shown twice. Conversations cap at 40 messages. The folder is gitignored automatically.
 
@@ -153,7 +153,7 @@ Messages arriving through the bridge are written by the peer agent, even though 
 
 ## Limitations
 
-- Idle delivery to Codex requires a working `codex queue` command and the correct saved thread ID. Claude without an enabled channel can still wait in its Stop hook for up to 570s.
+- Idle delivery to Codex requires a working `codex queue` command and the correct saved thread ID. Without an enabled channel, Claude receives unread messages at its next prompt.
 - Assistant replies are sent at the end of a turn. Codex can send mid-task progress updates with `tell`.
 - Both agents must run in the same folder on the same machine.
 - Each named chat is delivered only to its current pair of sessions. Join both sessions before expecting idle delivery.
@@ -198,6 +198,7 @@ Set aside on purpose, may come back:
 - **Codex to Codex.** Direct delivery is verified with `codex queue --thread <session name or UUID> --message "..."`. Each sender must be able to obtain an approved elevation for the command because `codex queue` writes to `~/.codex`; `workspace-write` alone protects that path. This path does not use the Claude bridge transcript.
 - **Several Codex workers as chat members.** A chat has one Claude member and one Codex member. Extra workers are not members; they report with `say`.
 - **Session identity.** `/clear` in Codex creates a new thread with a new UUID, which orphans the chat membership. Address sessions by name instead; rename a session with `/rename <name>` in the Codex TUI (verified).
+- **`/clear` in Claude.** It also changes the session id, while the channel process keeps running. The channel therefore rereads `~/.claude/sessions/<parent pid>.json` on every tick instead of trusting `CLAUDE_CODE_SESSION_ID`, which stays frozen at launch. A channel started before this fix keeps the old behaviour until Claude restarts.
 - **At-least-once delivery.** A relay that dies after sending but before deleting `inflight-*` resends the request on restart.
 - **Silent channel switch.** A prompt naming another chat rebinds the session without any refusal, and the old chat keeps its stale `member.json`.
 

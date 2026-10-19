@@ -61,7 +61,7 @@ async function prompt(side, text, session = `${side}-1`, extraEnv = {}) {
   const out = await run(['hook', side], JSON.stringify({ hook_event_name: 'UserPromptSubmit', cwd: DIR, session_id: session, prompt: text }), extraEnv)
   return out ? JSON.parse(out).hookSpecificOutput.additionalContext : null
 }
-/** An addressed reply that opens the bridge. Codex returns idle; Claude may wait without a channel. */
+/** An addressed reply that opens the bridge. Both Stop hooks return; the channel delivers to Claude. */
 const openWith = (side, msg) => stop(side, `@${side === 'codex' ? 'claude' : 'codex'} ${msg}`)
 const wakeEnv = { CODEX_BRIDGE_CODEX_BIN: FAKE_CODEX, CODEX_BRIDGE_WAKE_LOG: WAKE_LOG }
 const wakeCalls = () => existsSync(WAKE_LOG) ? readFileSync(WAKE_LOG, 'utf8').trim().split('\n').map(JSON.parse) : []
@@ -164,67 +164,60 @@ test('prompt context: an open bridge adds instructions only when the prompt name
 
 test('prompt hook hands over unread messages, so a plain prompt to an idle Codex catches it up', async () => {
   reset()
-  const claudeWaiting = openWith('claude', 'Should we shard by tenant?')
-  await sleep(300)
+  assert.equal(await openWith('claude', 'Should we shard by tenant?'), null)
   const ctx = await prompt('codex', 'go')
   assert.match(ctx, /Unread from the bridge:\n\n\[claude\] Should we shard by tenant\?/)
   assert.equal(await stop('codex', '@claude Yes, by tenant.'), null) // seen advanced: returns idle without re-delivery
-  assert.match((await claudeWaiting).reason, /\[codex\] Yes, by tenant\./)
+  assert.match(await prompt('claude', 'continue'), /\[codex\] Yes, by tenant\./)
   reset()
 })
 
 test('[WAITING] listens without sending; the listener gets the question at once', async () => {
   reset()
-  const claudeWaiting = openWith('claude', 'Should we shard by tenant?')
-  await sleep(300)
+  assert.equal(await openWith('claude', 'Should we shard by tenant?'), null)
   const codexGot = await stop('codex', '[WAITING]')
   assert.match(codexGot.reason, /\[claude\] Should we shard by tenant\?/)
   assert.ok(!chat().includes('[WAITING]'))
   reset()
-  assert.equal(await claudeWaiting, null)
 })
 
-test('a message that lands while I am mid-turn is delivered on my next stop, not dropped', async () => {
+test('a message that lands while Claude is away is delivered on its next prompt', async () => {
   reset()
-  const claudeWaiting = openWith('claude', 'A1')
-  await sleep(300)
+  assert.equal(await openWith('claude', 'A1'), null)
   await stop('codex', '[WAITING]')                        // codex has A1 and is "thinking"
   await run(['say', 'U1'])                                // human interjects
-  assert.match((await claudeWaiting).reason, /\[user\] U1/) // claude is now "thinking" about U1
   assert.match((await stop('codex', '@claude C1')).reason, /\[user\] U1/) // codex replies to A1 and also sees U1
-  const claudeGot = await stop('claude', '@codex A2')      // claude finishes its U1 turn
-  assert.match(claudeGot.reason, /\[codex\] C1/)          // C1 was not skipped
-  assert.ok(!claudeGot.reason.includes('[user] U1'))      // and U1 is not shown twice
+  assert.equal(await stop('claude', '@codex A2'), null)
+  const claudeGot = await prompt('claude', 'continue')
+  assert.match(claudeGot, /\[user\] U1/)
+  assert.match(claudeGot, /\[codex\] C1/)
   assert.match((await stop('codex', '@claude Noted.')).reason, /\[claude\] A2/)
 })
 
 test('[WAITING] on a later Codex turn returns idle without re-delivering the last message', async () => {
   reset()
-  const claudeWaiting = openWith('claude', 'Q')
-  await sleep(300)
+  assert.equal(await openWith('claude', 'Q'), null)
   assert.match((await stop('codex', '[WAITING]')).reason, /\[claude\] Q/)
   const again = await stop('codex', '[WAITING] I need a moment.')
   assert.equal(again, null)
   reset()
-  await claudeWaiting
 })
 
 test('side is detected from the Codex payload when no side is given', async () => {
   reset()
-  const claudeWaiting = openWith('claude', 'Who are you?')
-  await sleep(300)
+  assert.equal(await openWith('claude', 'Who are you?'), null)
   const out = JSON.parse(await run(['hook'], JSON.stringify({ hook_event_name: 'Stop', cwd: DIR, session_id: 'x', turn_id: 't1', last_assistant_message: '@claude Codex here.' })))
   assert.match(out.reason, /\[claude\] Who are you\?/)
-  assert.match((await claudeWaiting).reason, /\[codex\] Codex here\./)
+  assert.match(await prompt('claude', 'continue'), /\[codex\] Codex here\./)
   assert.match(chat(), /## codex @ [^\n]+\nCodex here\./)
 })
 
 test('quoted markers: mid-sentence [DONE] does not end, a quoted header line does not split a block', async () => {
   reset()
   assert.equal(await openWith('codex', 'I will say [DONE] when we agree. Your last block was:\n## codex @ 2026-01-01T00:00:00.000Z\nhello'), null)
-  const claudeGot = await stop('claude', '[WAITING]')
-  assert.ok(claudeGot.reason.includes('[codex] I will say [DONE] when we agree. Your last block was:\n ## codex @ 2026-01-01T00:00:00.000Z\nhello'))
-  assert.ok(!claudeGot.reason.includes('[codex] hello'))
+  const claudeGot = await prompt('claude', 'continue')
+  assert.ok(claudeGot.includes('[codex] I will say [DONE] when we agree. Your last block was:\n ## codex @ 2026-01-01T00:00:00.000Z\nhello'))
+  assert.ok(!claudeGot.includes('[codex] hello'))
   writeFileSync(join(BDIR, 'claude.channel'), String(process.pid))
   assert.equal(await stop('claude', '@codex Fine.'), null)
   assert.match(await prompt('codex', 'New message available.'), /\[claude\] Fine\./) // still open
@@ -244,24 +237,25 @@ test('message cap closes the conversation', async () => {
   reset()
   mkdirSync(BDIR, { recursive: true }); writeFileSync(CHAT, '')
   for (let i = 0; i < 40; i++) await run(['say', `m${i}`])
-  assert.match((await stop('claude', '@codex hi')).reason, /\[user\] m39/) // backlog is delivered first
-  assert.equal(await stop('claude', '@codex again'), null)
+  assert.match((await stop('codex', '[WAITING]')).reason, /\[user\] m39/) // backlog is delivered first
+  assert.equal(await stop('codex', '[WAITING]'), null)
   assert.match(chat(), /## bridge @ [^\n]+\nMessage cap \(40\) reached\. \[DONE\]/)
 })
 
-test('no reply within the wait budget: stops with a systemMessage', async () => {
+test('Claude Stop returns immediately when no Codex reply or channel is available', async () => {
   reset()
+  const started = Date.now()
   const out = await openWith('claude', 'Anyone there?')
-  assert.equal(out?.decision, undefined)
-  assert.match(out.systemMessage, /no reply from codex/)
+  assert.equal(out, null)
+  assert.ok(Date.now() - started < 250)
 })
 
-test('removing the folder unblocks a waiting hook', async () => {
+test('removing the folder unblocks Codex waiting for Claude', async () => {
   reset()
-  const claudeWaiting = openWith('claude', 'Waiting…')
+  const codexWaiting = openWith('codex', 'Waiting…')
   await sleep(300)
   reset()
-  assert.equal(await claudeWaiting, null)
+  assert.equal(await codexWaiting, null)
 })
 
 test('Claude Stop hook does not wait while a live channel owns delivery', async () => {
@@ -321,6 +315,34 @@ test('Claude beta Stop returns promptly when its session channel is live', async
     try { process.kill(-channelProcess.pid, 'SIGTERM') } catch {}
     if (channelProcess.exitCode === null) await new Promise(resolve => channelProcess.once('exit', resolve))
     closeSync(fd)
+    reset()
+  }
+})
+
+test('channel follows its parent Claude to the new session id after /clear', async () => {
+  reset()
+  const stale = 'claude-before-clear'
+  const live = 'claude-after-clear'
+  const home = join(DIR, 'claude-clear-home')
+  const sessions = join(home, '.claude', 'sessions')
+  mkdirSync(sessions, { recursive: true })
+  // the channel's parent is this test process; its session file already holds the post-/clear id
+  writeFileSync(join(sessions, `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId: live, cwd: DIR }))
+  await prompt('claude', 'B-beta: join', live, { HOME: home })
+  writeFileSync(join(BDIR, 'beta', 'chat.md'), '')
+
+  const channelProcess = spawn(process.execPath, [BRIDGE, 'channel'], {
+    cwd: DIR,
+    env: { ...env, HOME: home, CODEX_BRIDGE_CHANNEL: '1', CLAUDE_CODE_SESSION_ID: stale },
+    stdio: ['pipe', 'ignore', 'inherit'],
+  })
+  try {
+    const deadline = Date.now() + 2000
+    while (!existsSync(join(BDIR, 'beta', 'claude.channel')) && Date.now() < deadline) await sleep(20)
+    assert.equal(readFileSync(join(BDIR, 'beta', 'claude.channel'), 'utf8'), String(channelProcess.pid), 'channel should claim the live session bridge, not the stale one')
+  } finally {
+    channelProcess.kill('SIGTERM')
+    if (channelProcess.exitCode === null) await new Promise(resolve => channelProcess.once('exit', resolve))
     reset()
   }
 })
