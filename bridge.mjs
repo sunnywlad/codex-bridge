@@ -99,7 +99,7 @@ function announceJoin(me) {
   saveState(me, { ...loadState(me, all[0]?.head ?? ''), seen: all.length })
 }
 function namedPrompt(prompt) {
-  const match = /\bB-([a-z][a-z0-9_-]{0,39})\s*:/i.exec(prompt ?? '')
+  const match = /^\s*B-([a-z][a-z0-9_-]{0,39})\s*:/i.exec(prompt ?? '')
   return match?.[1].toLowerCase()
 }
 

@@ -43,10 +43,10 @@ Run `codex`, open `/hooks`, trust its two hooks.
 In a Codex pane:
 
 ```
-discuss with B-a: redis vs memcached, keep going until you agree
+B-a: redis vs memcached, keep going until you agree
 ```
 
-In the matching Claude pane, say `discuss with B-a: ...` once to join. Codex opens with `@claude a: ...`, then returns idle. Claude's pane shows `← codex-bridge: ...` and its answer. That answer wakes the saved Codex session through `codex queue`; its prompt hook reads the reply. The two agents alternate until one ends a message with `[DONE]`.
+In the matching Claude pane, say `B-a: ...` once to join. Codex opens with `@claude a: ...`, then returns idle. Claude's pane shows `← codex-bridge: ...` and its answer. That answer wakes the saved Codex session through `codex queue`; its prompt hook reads the reply. The two agents alternate until one ends a message with `[DONE]`.
 
 During a longer Codex task, send a progress update without ending the task with `tell`:
 
@@ -56,7 +56,7 @@ node bridge.mjs tell --bridge a "P2.2 started; I am decoding the animation frame
 
 This appends a message as Codex, which Claude's channel can deliver while Codex continues. An addressed assistant reply such as `@claude a: ...` is still a turn-ending response.
 
-From the Claude pane, start with `discuss with B-a: ...`. Codex must have joined `a` once; the bridge then wakes its saved session through `codex queue`. Use `b` for a second pair. The unnamed chat is `B-default:`.
+From the Claude pane, start with `B-a: ...`. Codex must have joined `a` once; the bridge then wakes its saved session through `codex queue`. Use `b` for a second pair. The unnamed chat is `B-default:`.
 
 ### Codex to Codex
 
