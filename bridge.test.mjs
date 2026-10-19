@@ -480,7 +480,7 @@ test('named bridge ignores unrelated replies and forwards a reply to a delivered
   await prompt('codex', 'discuss with claude bridge alpha: test', 'codex-alpha')
   writeFileSync(join(BDIR, 'alpha', 'claude.channel'), String(process.pid))
   assert.equal(await stop('claude', 'Progress update for Wladimir.', 'claude-alpha'), null)
-  assert.ok(!existsSync(join(BDIR, 'alpha', 'chat.md')))
+  assert.doesNotMatch(readFileSync(join(BDIR, 'alpha', 'chat.md'), 'utf8'), /Progress update/)
   await stop('codex', '@claude alpha: question', 'codex-alpha', {}, { CODEX_BRIDGE_WAIT_MS: '0' })
   rmSync(join(BDIR, 'alpha', 'claude.channel'))
   assert.match(await prompt('claude', 'continue', 'claude-alpha'), /\[codex\] question/)
@@ -545,12 +545,40 @@ test('say can address one named bridge without touching another', async () => {
   assert.equal(readFileSync(join(BDIR, 'beta', 'chat.md'), 'utf8'), '')
 })
 
+test('an explicit attach writes a visible join notice that the peer is not forced to read', async () => {
+  reset()
+  await prompt('codex', 'claude bridge alpha:', 'codex-alpha')
+  assert.match(readFileSync(join(BDIR, 'alpha', 'chat.md'), 'utf8'), /## bridge @ [^\n]+\nCodex CLI joined bridge alpha\./)
+  await prompt('claude', 'codex bridge alpha:', 'claude-alpha')
+  assert.match(readFileSync(join(BDIR, 'alpha', 'chat.md'), 'utf8'), /Claude Code joined bridge alpha\./)
+  writeFileSync(join(BDIR, 'alpha', 'claude.channel'), String(process.pid))
+  assert.equal(await stop('claude', '@codex alpha: [WAITING]', 'claude-alpha'), null)
+  assert.equal(await prompt('codex', 'continue', 'codex-alpha'), null)
+})
+
+test('an attach reopens a chat closed by [DONE] and keeps the Codex thread', async () => {
+  reset()
+  mkdirSync(join(BDIR, 'alpha'), { recursive: true })
+  writeFileSync(join(BDIR, 'alpha', 'chat.md'), '## claude @ 2026-10-18T22:46:35.260Z\nTermine. [DONE]\n\n')
+  writeFileSync(join(BDIR, 'alpha', 'codex.json'), JSON.stringify({ first: '', seen: 0, thread: 'T-1' }))
+  await prompt('claude', 'codex bridge alpha:', 'claude-alpha')
+  const text = readFileSync(join(BDIR, 'alpha', 'chat.md'), 'utf8')
+  assert.doesNotMatch(text, /DONE/)
+  assert.match(text, /Claude Code joined bridge alpha\./)
+  assert.equal(JSON.parse(readFileSync(join(BDIR, 'alpha', 'codex.json'), 'utf8')).thread, 'T-1')
+})
+
+test('an attach-only prompt tells the agent to ask nothing and answer [WAITING]', async () => {
+  reset()
+  assert.match(await prompt('claude', 'codex bridge alpha:', 'claude-alpha'), /ask no question[\s\S]*\[WAITING\]/)
+})
+
 test('a replaced named member cannot add messages to the old bridge', async () => {
   reset()
   await prompt('codex', 'discuss with claude bridge alpha: old', 'codex-old')
   await prompt('codex', 'discuss with claude bridge alpha: new', 'codex-new')
   assert.equal(await stop('codex', '@claude alpha: stale', 'codex-old'), null)
-  assert.ok(!existsSync(join(BDIR, 'alpha', 'chat.md')))
+  assert.doesNotMatch(readFileSync(join(BDIR, 'alpha', 'chat.md'), 'utf8'), /stale/)
 })
 
 test('a Claude session binds to a named bridge only after explicitly joining it', async () => {
