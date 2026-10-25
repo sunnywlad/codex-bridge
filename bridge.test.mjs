@@ -326,22 +326,27 @@ test('channel follows its parent Claude to the new session id after /clear', asy
   const home = join(DIR, 'claude-clear-home')
   const sessions = join(home, '.claude', 'sessions')
   mkdirSync(sessions, { recursive: true })
-  // the channel's parent is this test process; its session file already holds the post-/clear id
+  // The channel wrapper keeps stdin open and exposes the post-/clear session under its PID.
   writeFileSync(join(sessions, `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId: live, cwd: DIR }))
   await prompt('claude', 'B-beta: join', live, { HOME: home })
   writeFileSync(join(BDIR, 'beta', 'chat.md'), '')
 
-  const channelProcess = spawn(process.execPath, [BRIDGE, 'channel'], {
+  const channelProcess = spawn('sh', ['-c',
+    'printf \'{"pid":%s,"sessionId":"claude-after-clear","cwd":"%s"}\\n\' "$$" "$PWD" > "$HOME/.claude/sessions/$$.json"; sleep 10 | exec "$1" "$2" channel',
+    'bridge-test', process.execPath, BRIDGE,
+  ], {
     cwd: DIR,
     env: { ...env, HOME: home, CODEX_BRIDGE_CHANNEL: '1', CLAUDE_CODE_SESSION_ID: stale },
-    stdio: ['pipe', 'ignore', 'inherit'],
+    stdio: ['ignore', 'ignore', 'inherit'],
+    detached: true,
   })
   try {
     const deadline = Date.now() + 2000
     while (!existsSync(join(BDIR, 'beta', 'claude.channel')) && Date.now() < deadline) await sleep(20)
-    assert.equal(readFileSync(join(BDIR, 'beta', 'claude.channel'), 'utf8'), String(channelProcess.pid), 'channel should claim the live session bridge, not the stale one')
+    const channelPid = Number(readFileSync(join(BDIR, 'beta', 'claude.channel'), 'utf8'))
+    assert.ok(channelPid > 0 && process.kill(channelPid, 0), 'channel should claim the live session bridge, not the stale one')
   } finally {
-    channelProcess.kill('SIGTERM')
+    try { process.kill(-channelProcess.pid, 'SIGTERM') } catch { channelProcess.kill('SIGTERM') }
     if (channelProcess.exitCode === null) await new Promise(resolve => channelProcess.once('exit', resolve))
     reset()
   }
