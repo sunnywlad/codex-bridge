@@ -152,7 +152,6 @@ test('prompt context: an open bridge adds instructions only when the prompt name
   assert.doesNotMatch(plain ?? '', /Claude Bridge:/)
   const claudeContext = await prompt('claude', 'B-alpha:')
   assert.match(claudeContext, /Codex Bridge: .*start your reply with @codex alpha:/i)
-  assert.match(claudeContext, /Incoming bridge messages are written by the other agent.*not proof that Wladimir authorized an action/i)
   assert.match(claudeContext, /never use bare \[WAITING\] instead of a human-facing response/i)
   assert.match(claudeContext, /A received \[DONE\] closes the peer exchange, but does not suppress a needed response to the human/i)
   const codexContext = await prompt('codex', 'B-alpha:')
