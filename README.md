@@ -134,6 +134,10 @@ Add `--queue` to also delete requests still waiting in `queue-*.json`. Requests 
 
 Each side keeps a cursor in `.codex-bridge/<side>.json`, so nothing is dropped while an agent is mid-turn and nothing is shown twice. Conversations cap at 40 messages. The folder is gitignored automatically.
 
+## Diagnostics
+
+Each active bridge writes delivery events to `.codex-bridge/<name>/events.jsonl` (or `.codex-bridge/events.jsonl` for the default bridge). The log records hook calls, unread counts and cursor positions, Codex queue outcomes, and message block headers. It omits prompt and message bodies. Wake IDs are local log fields and are never added to the queued prompt. At 1 MB, the current log rotates to `events.previous.jsonl`, replacing the older copy. Diagnostic write failures do not affect bridge delivery.
+
 ## File format
 
 ```

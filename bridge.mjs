@@ -34,6 +34,7 @@ import { channelResponse } from './channel-protocol.mjs'
 const VERSION = '0.2.0'
 const WAIT_MS = Number(process.env.CODEX_BRIDGE_WAIT_MS ?? 570_000) // stay under the 600s hook timeout
 const MAX_MSGS = 40
+const TRACE_MAX_BYTES = 1_000_000
 const QUEUE_RETRIES = 3
 const DEFAULT_QUEUE_RETRY_DELAYS_MS = [1000, 3000]
 const MARK = /^## (claude|codex|user|bridge) @ \d{4}-\d\d-\d\dT[\d:.]+Z$/
@@ -49,6 +50,19 @@ function setDir(cwd, name = 'default') {
   CHAT = join(DIR, 'chat.md')
   MARKER = join(DIR, 'claude.channel') // pid of the channel process that delivers to Claude
   WAITING = join(DIR, 'codex.waiting')
+}
+
+function trace(event, details = {}) {
+  try {
+    mkdirSync(DIR, { recursive: true })
+    const file = join(DIR, 'events.jsonl')
+    if (existsSync(file) && statSync(file).size >= TRACE_MAX_BYTES) {
+      const previous = join(DIR, 'events.previous.jsonl')
+      rmSync(previous, { force: true })
+      renameSync(file, previous)
+    }
+    appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), event, bridge: BRIDGE_NAME, pid: process.pid, ...details }) + '\n')
+  } catch {} // diagnostics must never affect bridge delivery
 }
 
 const validName = name => typeof name === 'string' && /^[a-z][a-z0-9_-]{0,39}$/.test(name)
@@ -196,15 +210,35 @@ function discoverCodexThread() {
 }
 
 function wakeCodex() {
-  if (codexWaiting()) return
+  const wakeId = randomUUID()
+  let started
+  if (codexWaiting()) {
+    trace('wake_skipped', { wake_id: wakeId, reason: 'codex_waiting' })
+    return
+  }
   try {
     let thread
     try { thread = JSON.parse(readFileSync(stateFile('codex'), 'utf8')).thread } catch {}
     thread = BRIDGE_NAME === 'default' ? (process.env.CODEX_BRIDGE_THREAD || thread || discoverCodexThread()) : thread
-    if (typeof thread !== 'string' || !thread.trim()) return
+    if (typeof thread !== 'string' || !thread.trim()) {
+      trace('wake_skipped', { wake_id: wakeId, reason: 'no_codex_thread' })
+      return
+    }
+    started = Date.now()
+    trace('wake_started', { wake_id: wakeId, thread })
     execFileSync(process.env.CODEX_BRIDGE_CODEX_BIN || 'codex',
       ['queue', '--thread', thread, '--message', 'New message available.'], { timeout: 30_000 })
-  } catch {} // a failed wake must not break Claude's hook
+    trace('wake_finished', { wake_id: wakeId, thread, duration_ms: Date.now() - started, result: 'queued' })
+  } catch (error) {
+    trace('wake_finished', {
+      wake_id: wakeId,
+      duration_ms: started === undefined ? undefined : Date.now() - started,
+      result: 'error',
+      error_code: error.code,
+      signal: error.signal,
+      error: String(error.message ?? error).slice(0, 240),
+    })
+  } // a failed wake must not break Claude's hook
 }
 
 function sendToCodex(message) {
@@ -349,21 +383,65 @@ function bind(me, all) { // every session in this folder takes part; hooks are c
 function promptHook(me, other, input) {
   const isOpen = existsSync(CHAT)
   const mentions = namedPrompt(input.prompt) !== undefined
+  const promptKind = input.prompt === 'New message available.' ? 'bridge_wake' : typeof input.prompt === 'string' ? 'other' : 'missing'
   if (!isOpen && !mentions) return
   let extra = ''
+  let seenBefore
+  let seenAfter
+  let all = []
+  let fresh = []
+  let channelActive = false
   if (isOpen) {
-    const all = parse() ?? []
+    all = parse() ?? []
     const state = bind(me, all)
-    const fresh = unreadFor(all, state.seen, me)
-    if (fresh.length && !(me === 'claude' && channelAlive())) { // the channel delivers for Claude; otherwise hand over what is waiting
+    seenBefore = state.seen
+    fresh = unreadFor(all, state.seen, me)
+    channelActive = me === 'claude' && channelAlive()
+    if (fresh.length && !channelActive) { // the channel delivers for Claude; otherwise hand over what is waiting
       state.seen = all.length
       saveState(me, state)
+      seenAfter = state.seen
       extra = `\n\nUnread from the bridge:\n\n${fresh.map(fmt).join('\n\n')}`
+    } else {
+      seenAfter = state.seen
     }
   }
   const instructions = mentions ? context(me, other) : ''
-  if (!instructions && !extra) return
-  console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: instructions + extra } }))
+  const additionalContext = instructions + extra
+  if (!additionalContext) {
+    trace('prompt_checked', {
+      side: me,
+      hook: 'UserPromptSubmit',
+      session_id: input.session_id,
+      thread_id: me === 'codex' ? (process.env.CODEX_BRIDGE_THREAD || input.session_id || input.thread_id) : undefined,
+      prompt_kind: promptKind,
+      is_open: isOpen,
+      seen_before: seenBefore,
+      seen_after: seenAfter,
+      unread_count: fresh.length,
+      unread_heads: fresh.map(block => block.head),
+      channel_active: channelActive,
+      emitted: false,
+    })
+    return
+  }
+  const output = JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext } })
+  console.log(output)
+  trace('prompt_checked', {
+    side: me,
+    hook: 'UserPromptSubmit',
+    session_id: input.session_id,
+    thread_id: me === 'codex' ? (process.env.CODEX_BRIDGE_THREAD || input.session_id || input.thread_id) : undefined,
+    prompt_kind: promptKind,
+    is_open: isOpen,
+    seen_before: seenBefore,
+    seen_after: seenAfter,
+    unread_count: fresh.length,
+    unread_heads: fresh.map(block => block.head),
+    channel_active: channelActive,
+    emitted: true,
+    output_bytes: Buffer.byteLength(output),
+  })
 }
 
 async function hook(arg) {
@@ -377,8 +455,20 @@ async function hook(arg) {
   const requested = input.hook_event_name === 'UserPromptSubmit' ? namedPrompt(input.prompt) : undefined
   const name = requested || sessionName(me, id)
   setDir(cwd, validName(name) ? name : 'default')
+  if (existsSync(CHAT) || requested) trace('hook_received', {
+    side: me,
+    hook: input.hook_event_name,
+    session_id: id,
+    thread_id: me === 'codex' ? (process.env.CODEX_BRIDGE_THREAD || id || input.thread_id) : undefined,
+    prompt_kind: input.hook_event_name === 'UserPromptSubmit'
+      ? (input.prompt === 'New message available.' ? 'bridge_wake' : 'other')
+      : undefined,
+  })
   if (requested || (name !== 'default' && currentMember(me, id))) member(me, id, name)
-  if (name !== 'default' && !currentMember(me, id)) return
+  if (name !== 'default' && !currentMember(me, id)) {
+    trace('hook_skipped', { side: me, hook: input.hook_event_name, reason: 'session_not_bridge_member', session_id: id })
+    return
+  }
   if (requested) announceJoin(me)
   if (process.env.CODEX_BRIDGE_DEBUG !== undefined ||
       existsSync(join(DIR, 'debug')) ||
@@ -421,6 +511,12 @@ async function hook(arg) {
   if (mine && forwarding && !listening) {
     append(me, mine)
     saveState(me, state)
+    const blocks = parse() ?? []
+    trace('message_appended', {
+      side: me,
+      block_index: blocks.length,
+      block_head: blocks.at(-1)?.head,
+    })
     if (me === 'claude') wakeCodex()
   }
   // Claude receives peer messages through the channel or on its next prompt.
@@ -435,8 +531,17 @@ async function hook(arg) {
       all = parsed
       const fresh = unread()
       if (fresh.length) {
+        const seenBefore = state.seen
         state.seen = all.length
         saveState(me, state)
+        trace('stop_delivery', {
+          side: me,
+          hook: 'Stop',
+          seen_before: seenBefore,
+          seen_after: state.seen,
+          unread_count: fresh.length,
+          unread_heads: fresh.map(block => block.head),
+        })
         const reason =
           `New message${fresh.length > 1 ? 's' : ''} via codex-bridge:\n\n${fresh.map(fmt).join('\n\n')}` +
           `\n\n(If you want to write to ${other}, start your reply with @${other}${name === 'default' ? ':' : ` ${name}:`}. Otherwise answer the user normally. End your message with [DONE] when the conversation should end.)`
