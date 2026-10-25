@@ -61,6 +61,9 @@ async function prompt(side, text, session = `${side}-1`, extraEnv = {}) {
   const out = await run(['hook', side], JSON.stringify({ hook_event_name: 'UserPromptSubmit', cwd: DIR, session_id: session, prompt: text }), extraEnv)
   return out ? JSON.parse(out).hookSpecificOutput.additionalContext : null
 }
+const sessionStart = (source, session = 'codex-beta') => run(['hook', 'codex'], JSON.stringify({
+  hook_event_name: 'SessionStart', cwd: DIR, session_id: session, source,
+}))
 /** An addressed reply that opens the bridge. Both Stop hooks return; the channel delivers to Claude. */
 const openWith = (side, msg) => stop(side, `@${side === 'codex' ? 'claude' : 'codex'} ${msg}`)
 const wakeEnv = { CODEX_BRIDGE_CODEX_BIN: FAKE_CODEX, CODEX_BRIDGE_WAKE_LOG: WAKE_LOG }
@@ -80,6 +83,31 @@ function rollout(name, payload, modified, daysAgo = 0) {
   writeFileSync(file, JSON.stringify({ type: 'session_meta', payload }) + '\nnot JSON on line two\n')
   utimesSync(file, modified, modified)
 }
+
+test('SessionStart emits the latest Claude block only after compact for a named bridge member', async () => {
+  reset()
+  await prompt('codex', 'B-beta: join', 'codex-beta')
+  const betaChat = join(BDIR, 'beta', 'chat.md')
+  appendFileSync(betaChat, '## claude @ 2026-10-25T10:00:00.000Z\nEarlier reply\n\n')
+  appendFileSync(betaChat, '## claude @ 2026-10-25T10:01:00.000Z\nLatest reply\n\n')
+
+  const compact = JSON.parse(await sessionStart('compact'))
+  assert.match(compact.hookSpecificOutput.additionalContext, /\[claude\] Latest reply/)
+  assert.doesNotMatch(compact.hookSpecificOutput.additionalContext, /Earlier reply/)
+  assert.equal(await sessionStart('startup'), '')
+  assert.equal(await sessionStart('resume'), '')
+
+  reset()
+  await prompt('codex', 'B-beta: join', 'codex-beta')
+  assert.equal(await sessionStart('compact'), '') // the chat contains no Claude message
+
+  appendFileSync(betaChat, '## claude @ 2026-10-25T10:02:00.000Z\nMember reply\n\n')
+  const member = JSON.parse(readFileSync(join(BDIR, 'beta', 'codex.member.json'), 'utf8'))
+  assert.equal(member.id, 'codex-beta')
+  const strangerSession = join(BDIR, 'sessions', `codex-${createHash('sha256').update('codex-stranger').digest('hex')}.json`)
+  writeFileSync(strangerSession, JSON.stringify({ id: 'codex-stranger', name: 'beta', pid: process.pid }))
+  assert.equal(await sessionStart('compact', 'codex-stranger'), '')
+})
 
 test('no bridge and no @-address: hooks are no-ops', async () => {
   reset()

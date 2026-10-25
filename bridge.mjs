@@ -469,6 +469,32 @@ async function hook(arg) {
     trace('hook_skipped', { side: me, hook: input.hook_event_name, reason: 'session_not_bridge_member', session_id: id })
     return
   }
+  if (input.hook_event_name === 'SessionStart') {
+    if (me !== 'codex' || input.source !== 'compact' || name === 'default' || !existsSync(CHAT)) return
+    let all
+    try { all = parse() } catch { return }
+    if (all === null || done(all)) return
+    const lastClaude = [...all].reverse().find(block => block.from === 'claude')
+    if (!lastClaude) return
+    const additionalContext =
+      `Your context was compacted. Do not repeat the handshake or startup instructions; resume the task.\n\n` +
+      `Last message received from Claude:\n\n${fmt(lastClaude)}\n\n` +
+      `Before repeating work, check ${CHAT}. If later messages from you in that file show the task was already delivered, do not redo it.\n\n` +
+      `To reply to Claude, start your reply with @claude ${name}:. To send a progress update while continuing, run ` +
+      `node ${resolve(process.argv[1])} tell --bridge ${name} \"your update\".`
+    const output = JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext } })
+    console.log(output)
+    trace('compact_context_emitted', {
+      side: me,
+      hook: input.hook_event_name,
+      source: input.source,
+      session_id: id,
+      thread_id: process.env.CODEX_BRIDGE_THREAD || id || input.thread_id,
+      message_head: lastClaude.head,
+      output_bytes: Buffer.byteLength(output),
+    })
+    return
+  }
   if (requested) announceJoin(me)
   if (process.env.CODEX_BRIDGE_DEBUG !== undefined ||
       existsSync(join(DIR, 'debug')) ||
