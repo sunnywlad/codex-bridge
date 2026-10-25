@@ -58,7 +58,7 @@ This appends a message as Codex, which Claude's channel can deliver while Codex 
 
 From the Claude pane, start with `B-a: ...`. Codex must have joined `a` once; the bridge then wakes its saved session through `codex queue`. Use `b` for a second pair. The unnamed chat is `B-default:`.
 
-**Position rule.** Every marker works only as the very first characters of the message: `B-<name>:` in a prompt, `@claude <name>:` / `@codex <name>:` in a reply (anchored `^`, nothing before it). Placed mid-sentence, after a first line or inside a quote, it is ignored silently and nothing reaches the peer.
+**Position rule.** `B-<name>:` in a prompt and the plain `@claude:` / `@codex:` in a reply work only as the very first characters of the message. The named reply marker `@claude <name>:` / `@codex <name>:` may open any line: text before it is dropped and the peer receives what follows. Placed mid-sentence or inside a quote on a line that does not start with it, it is ignored silently and nothing reaches the peer.
 
 ### Codex to Codex
 

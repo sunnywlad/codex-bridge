@@ -494,10 +494,14 @@ async function hook(arg) {
   if (input.hook_event_name === 'UserPromptSubmit') return promptHook(me, other, input)
 
   let mine = input.last_assistant_message?.trim() ?? ''
-  const explicitAddress = new RegExp(`^@${other}\\s+([a-z][a-z0-9_-]{0,39}):\\s*`, 'i').exec(mine)
+  // A named marker may open any line, so a preamble for the user before it is dropped; the plain marker stays anchored to the start.
+  const explicitAddress = new RegExp(`^@${other}\\s+([a-z][a-z0-9_-]{0,39}):\\s*`, 'im').exec(mine)
   const plainAddress = new RegExp(`^@${other}(?:(?:[:,]\\s*)|\\s+)`, 'i').exec(mine)
   const addressed = explicitAddress ? explicitAddress[1].toLowerCase() === name : name === 'default' && !!plainAddress
-  if (addressed) mine = mine.slice((explicitAddress || plainAddress)[0].length).trim()
+  if (addressed) {
+    const match = explicitAddress || plainAddress
+    mine = mine.slice(match.index + match[0].length).trim()
+  }
   const listening = tagged(mine, '[WAITING]')
   let all = existsSync(CHAT) ? (parse() ?? []) : null
   if (all === null) { if (!addressed || listening) return; open(); all = [] }

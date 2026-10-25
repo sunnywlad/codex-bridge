@@ -112,6 +112,23 @@ test('Codex returns idle after sending and Claude wakes its named session for th
   assert.equal(await prompt('codex', 'continue', 'codex-beta'), null, 'the reply must be delivered only once')
 })
 
+test('a named marker that opens a later line still reaches the peer, without the preamble', async () => {
+  reset()
+  await prompt('codex', 'B-beta: join', 'codex-beta')
+  await prompt('claude', 'B-beta: join', 'claude-beta')
+  const beta = join(BDIR, 'beta')
+  writeFileSync(join(beta, 'claude.channel'), String(process.pid))
+  assert.equal(await stop('claude', 'Je transmets la tâche à Codex.\n\n@codex beta: build it', 'claude-beta', {}, wakeEnv), null)
+  const written = readFileSync(join(beta, 'chat.md'), 'utf8')
+  assert.match(written, /build it/)
+  assert.doesNotMatch(written, /Je transmets/)
+  reset()
+  await prompt('codex', 'B-beta: join', 'codex-beta')
+  await prompt('claude', 'B-beta: join', 'claude-beta')
+  assert.equal(await stop('claude', 'cite: @codex beta: not a marker', 'claude-beta', {}, wakeEnv), null)
+  assert.ok(!/not a marker/.test(readFileSync(join(BDIR, 'beta', 'chat.md'), 'utf8')), 'a mid-line marker stays ignored')
+})
+
 test('@claude at the start of a Codex reply opens the bridge, strips the prefix, returns idle', async () => {
   reset()
   assert.equal(await openWith('codex', 'Redis or Memcached for caching?'), null)
