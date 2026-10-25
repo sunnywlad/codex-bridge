@@ -553,7 +553,7 @@ test('named bridge ignores unrelated replies and forwards a reply to a delivered
   await prompt('claude', 'B-alpha: test', 'claude-alpha')
   await prompt('codex', 'B-alpha: test', 'codex-alpha')
   writeFileSync(join(BDIR, 'alpha', 'claude.channel'), String(process.pid))
-  assert.equal(await stop('claude', 'Progress update for Wladimir.', 'claude-alpha'), null)
+  assert.equal(await stop('claude', 'Progress update for the user.', 'claude-alpha'), null)
   assert.doesNotMatch(readFileSync(join(BDIR, 'alpha', 'chat.md'), 'utf8'), /Progress update/)
   await stop('codex', '@claude alpha: question', 'codex-alpha', {}, { CODEX_BRIDGE_WAIT_MS: '0' })
   rmSync(join(BDIR, 'alpha', 'claude.channel'))
@@ -583,10 +583,10 @@ test('Stop forwards a bridge response only when it is explicitly addressed', asy
   assert.match(readFileSync(file, 'utf8'), /My UID is 12345/)
 
   await stop('codex', '[WAITING]', 'codex-alpha')
-  await stop('codex', 'My answer to Wladimir.', 'codex-alpha')
-  assert.doesNotMatch(readFileSync(file, 'utf8'), /My answer to Wladimir/)
-  await stop('codex', '@claude alpha: My answer to Wladimir.', 'codex-alpha')
-  assert.match(readFileSync(file, 'utf8'), /My answer to Wladimir/)
+  await stop('codex', 'My answer to the user.', 'codex-alpha')
+  assert.doesNotMatch(readFileSync(file, 'utf8'), /My answer to the user/)
+  await stop('codex', '@claude alpha: My answer to the user.', 'codex-alpha')
+  assert.match(readFileSync(file, 'utf8'), /My answer to the user/)
 })
 
 test('default bridge also leaves unrelated status replies local', async () => {

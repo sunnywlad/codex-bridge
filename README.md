@@ -101,7 +101,7 @@ node bridge.mjs tell --bridge a "The audit is underway; I will send the result w
 To give an idle Codex session a task from a sandbox that cannot run `codex queue`, start one relay in a normal terminal for the project:
 
 ```bash
-node /home/wladimir/codex-bridge/bridge.mjs relay --project /home/wladimir
+node ~/codex-bridge/bridge.mjs relay --project ~
 ```
 
 The relay watches all named bridges in that project and works independently of Claude sessions. Keep it running while you want automatic delivery. Then, from a Codex sandbox in the same project, use:
@@ -110,17 +110,17 @@ The relay watches all named bridges in that project and works independently of C
 node bridge.mjs send --bridge a "Audit the report and reply briefly"
 ```
 
-The relay passes the request to `codex queue` using the saved Codex session ID. A project-wide `flock` allows only one relay at a time; it atomically renames each request to `inflight-*.json` before sending. A failed send gets three attempts with 1 s and 3 s waits between them. Requests that still fail, or target a replaced Codex thread, move to that bridge's `failed/` folder with a reason, and the chat receives a warning. Claude Code does not need to be open for this path. For a one-time attempt, use `node bridge.mjs relay --once --project /home/wladimir` from a normal terminal.
+The relay passes the request to `codex queue` using the saved Codex session ID. A project-wide `flock` allows only one relay at a time; it atomically renames each request to `inflight-*.json` before sending. A failed send gets three attempts with 1 s and 3 s waits between them. Requests that still fail, or target a replaced Codex thread, move to that bridge's `failed/` folder with a reason, and the chat receives a warning. Claude Code does not need to be open for this path. For a one-time attempt, use `node bridge.mjs relay --once --project ~` from a normal terminal.
 
 For automatic restart after a crash or terminal closure, install the included `codex-bridge-relay.service` as a user service. Check its `ExecStart` Node path before installing it. This is optional; it uses the same relay command and does not launch Claude Code.
 
 To clear one named chat and its read positions while keeping the paired session IDs and pending requests:
 
 ```bash
-node /home/wladimir/codex-bridge/bridge.mjs clear --bridge a
+node ~/codex-bridge/bridge.mjs clear --bridge a
 ```
 
-Run this from the project folder (`/home/wladimir` in the example). A new addressed conversation also clears that chat automatically. Individual conversations stop after 40 messages.
+Run this from the project folder (`~` in the example). A new addressed conversation also clears that chat automatically. Individual conversations stop after 40 messages.
 
 Add `--queue` to also delete requests still waiting in `queue-*.json`. Requests already claimed as `inflight-*.json` and past failures in `failed/` are preserved.
 
