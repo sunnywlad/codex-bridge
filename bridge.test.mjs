@@ -67,7 +67,9 @@ const sessionStart = (source, session = 'codex-beta') => run(['hook', 'codex'], 
 /** An addressed reply that opens the bridge. Both Stop hooks return; the channel delivers to Claude. */
 const openWith = (side, msg) => stop(side, `@${side === 'codex' ? 'claude' : 'codex'} ${msg}`)
 const wakeEnv = { CODEX_BRIDGE_CODEX_BIN: FAKE_CODEX, CODEX_BRIDGE_WAKE_LOG: WAKE_LOG }
-const wakeCalls = () => existsSync(WAKE_LOG) ? readFileSync(WAKE_LOG, 'utf8').trim().split('\n').map(JSON.parse) : []
+const rawWakeCalls = () => existsSync(WAKE_LOG) ? readFileSync(WAKE_LOG, 'utf8').trim().split('\n').map(JSON.parse) : []
+const wakeCalls = () => rawWakeCalls().map(args => args[0] === 'queue' && args[4]?.startsWith('New message from Claude via codex-bridge ')
+  ? [...args.slice(0, 4), 'New message available.'] : args)
 function readyToWake() {
   reset()
   rmSync(WAKE_LOG, { force: true })
@@ -136,7 +138,9 @@ test('Codex returns idle after sending and Claude wakes its named session for th
   assert.ok(Date.now() - listeningAt < 1000, 'listening must not keep Codex working')
   assert.equal(await stop('claude', '@codex beta: answer', 'claude-beta', {}, wakeEnv), null)
   assert.deepEqual(wakeCalls(), [['queue', '--thread', 'codex-beta', '--message', 'New message available.']])
-  assert.match(await prompt('codex', 'New message available.', 'codex-beta'), /\[claude\] answer/)
+  const queuedPrompt = rawWakeCalls()[0][4]
+  assert.match(queuedPrompt, /New message from Claude via codex-bridge \(wake_id=[0-9a-f-]+\):\n\n\[claude\] answer/)
+  assert.equal(await prompt('codex', queuedPrompt, 'codex-beta'), null)
   assert.equal(await prompt('codex', 'continue', 'codex-beta'), null, 'the reply must be delivered only once')
 })
 
@@ -157,7 +161,7 @@ test('a named marker that opens a later line still reaches the peer, without the
   assert.ok(!/not a marker/.test(readFileSync(join(BDIR, 'beta', 'chat.md'), 'utf8')), 'a mid-line marker stays ignored')
 })
 
-test('@claude at the start of a Codex reply opens the bridge, strips the prefix, returns idle', async () => {
+test('@claude at the start of a Codex reply opens the bridge, strips the prefix', async () => {
   reset()
   assert.equal(await openWith('codex', 'Redis or Memcached for caching?'), null)
   assert.ok(!existsSync(join(BDIR, 'codex.waiting')))
@@ -165,9 +169,8 @@ test('@claude at the start of a Codex reply opens the bridge, strips the prefix,
   assert.equal(readFileSync(join(BDIR, '.gitignore'), 'utf8'), '*\n')
   assert.match(await prompt('claude', 'hi'), /Unread from the bridge:\n\n\[codex\] Redis or Memcached for caching\?/) // idle Claude, no channel: a prompt catches it up
   assert.equal(await stop('claude', '@codex Redis, it has persistence. [DONE]'), null)
-  assert.match(await prompt('codex', 'New message available.'), /Unread from the bridge:\n\n\[claude\] Redis, it has persistence\. \[DONE\]/)
+  assert.match((await stop('codex', 'Thanks.'))?.reason ?? '', /\[claude\] Redis, it has persistence\. \[DONE\]/)
   assert.ok(!existsSync(join(BDIR, 'codex.waiting')))
-  assert.equal(await stop('codex', 'Thanks.'), null) // over: not logged
   assert.ok(!chat().includes('Thanks.'))
 })
 
@@ -211,8 +214,23 @@ test('prompt hook hands over unread messages, so a plain prompt to an idle Codex
   assert.equal(await openWith('claude', 'Should we shard by tenant?'), null)
   const ctx = await prompt('codex', 'go')
   assert.match(ctx, /Unread from the bridge:\n\n\[claude\] Should we shard by tenant\?/)
-  assert.equal(await stop('codex', '@claude Yes, by tenant.'), null) // seen advanced: returns idle without re-delivery
+  assert.match((await stop('codex', '@claude Yes, by tenant.'))?.reason ?? '', /\[claude\] Should we shard by tenant\?/)
   assert.match(await prompt('claude', 'continue'), /\[codex\] Yes, by tenant\./)
+  reset()
+})
+
+test('queued wake includes the bridge content and its exact prompt hook acknowledges it', async () => {
+  reset()
+  rmSync(WAKE_LOG, { force: true })
+  await prompt('codex', 'go', 'codex-1', { CODEX_BRIDGE_THREAD: 'codex-1' })
+  const stateFile = join(BDIR, 'codex.json')
+  assert.equal(await stop('claude', '@codex Reliable delivery', 'claude-1', {}, wakeEnv), null)
+  const queuedPrompt = rawWakeCalls()[0][4]
+  assert.match(queuedPrompt, /\[claude\] Reliable delivery/)
+  assert.equal(await prompt('codex', queuedPrompt, 'codex-1'), null)
+  const state = JSON.parse(readFileSync(stateFile, 'utf8'))
+  assert.equal(state.seen, 1)
+  assert.equal(await prompt('codex', 'continue'), null, 'acknowledged context is not repeated')
   reset()
 })
 
@@ -604,7 +622,7 @@ test('an addressed WAITING reply after DONE preserves the named transcript', asy
   writeFileSync(file, '## claude @ 2026-10-06T00:00:00.000Z\nfinished [DONE]\n\n')
   const before = readFileSync(file, 'utf8')
   assert.match(await prompt('codex', 'continue', 'codex-alpha'), /finished \[DONE\]/)
-  assert.equal(await stop('codex', '@claude alpha: [WAITING]', 'codex-alpha'), null)
+  assert.match((await stop('codex', '@claude alpha: [WAITING]', 'codex-alpha'))?.reason ?? '', /finished \[DONE\]/)
   assert.equal(readFileSync(file, 'utf8'), before)
 })
 

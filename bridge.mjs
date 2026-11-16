@@ -209,7 +209,7 @@ function discoverCodexThread() {
   }
 }
 
-function wakeCodex() {
+function wakeCodex(message) {
   const wakeId = randomUUID()
   let started
   if (codexWaiting()) {
@@ -226,8 +226,9 @@ function wakeCodex() {
     }
     started = Date.now()
     trace('wake_started', { wake_id: wakeId, thread })
+    const prompt = `New message from Claude via codex-bridge (wake_id=${wakeId}):\n\n[claude] ${message}`
     execFileSync(process.env.CODEX_BRIDGE_CODEX_BIN || 'codex',
-      ['queue', '--thread', thread, '--message', 'New message available.'], { timeout: 30_000 })
+      ['queue', '--thread', thread, '--message', prompt], { timeout: 30_000 })
     trace('wake_finished', { wake_id: wakeId, thread, duration_ms: Date.now() - started, result: 'queued' })
   } catch (error) {
     trace('wake_finished', {
@@ -383,7 +384,8 @@ function bind(me, all) { // every session in this folder takes part; hooks are c
 function promptHook(me, other, input) {
   const isOpen = existsSync(CHAT)
   const mentions = namedPrompt(input.prompt) !== undefined
-  const promptKind = input.prompt === 'New message available.' ? 'bridge_wake' : typeof input.prompt === 'string' ? 'other' : 'missing'
+  const wake = typeof input.prompt === 'string' && input.prompt.match(/^New message from Claude via codex-bridge \(wake_id=([0-9a-f-]+)\):\n\n([\s\S]*)$/)
+  const promptKind = wake ? 'bridge_wake_with_content' : input.prompt === 'New message available.' ? 'bridge_wake_legacy' : typeof input.prompt === 'string' ? 'other' : 'missing'
   if (!isOpen && !mentions) return
   let extra = ''
   let seenBefore
@@ -397,10 +399,27 @@ function promptHook(me, other, input) {
     seenBefore = state.seen
     fresh = unreadFor(all, state.seen, me)
     channelActive = me === 'claude' && channelAlive()
+    if (me === 'codex' && wake) {
+      // The queued Codex prompt carries the actual text. Only acknowledge a block
+      // when this hook's prompt body matches that bridge block exactly.
+      const acknowledged = all.findIndex((block, index) => index >= state.seen && block.from === 'claude' && fmt(block) === wake[2].trim())
+      if (acknowledged >= 0) {
+        state.seen = acknowledged + 1
+        saveState(me, state)
+        seenAfter = state.seen
+        fresh = unreadFor(all, state.seen, me)
+      }
+    }
     if (fresh.length && !channelActive) { // the channel delivers for Claude; otherwise hand over what is waiting
-      state.seen = all.length
-      saveState(me, state)
-      seenAfter = state.seen
+      if (me === 'codex') {
+        // Additional context is not an acknowledgement. The exception is an exact
+        // match above: the queued prompt itself carries that message to Codex.
+        seenAfter = state.seen
+      } else {
+        state.seen = all.length
+        saveState(me, state)
+        seenAfter = state.seen
+      }
       extra = `\n\nUnread from the bridge:\n\n${fresh.map(fmt).join('\n\n')}`
     } else {
       seenAfter = state.seen
@@ -547,7 +566,7 @@ async function hook(arg) {
       block_index: blocks.length,
       block_head: blocks.at(-1)?.head,
     })
-    if (me === 'claude') wakeCodex()
+    if (me === 'claude') wakeCodex(mine)
   }
   // Claude receives peer messages through the channel or on its next prompt.
   // Never hold Claude's Stop hook open waiting for a channel or a Codex reply.
